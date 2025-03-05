@@ -22,9 +22,12 @@ from torch import nn
 
 import logging as py_logging
 logger = py_logging.getLogger(__name__)
-logger.setLevel(py_logging.INFO)
+logger.setLevel(py_logging.DEBUG)  # Set to DEBUG for detailed logs
 if not logger.handlers:
-    logger.addHandler(py_logging.StreamHandler())
+    handler = py_logging.StreamHandler()
+    formatter = py_logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 def is_torch_available():
     try:
@@ -66,6 +69,7 @@ def deprecate_kwarg(old_name, version, new_name=None):
 class PretrainedConfig:
     # Minimal configuration base; actual Qwen2Config will override fields.
     def __init__(self, **kwargs):
+        logger.debug(f"Initializing PretrainedConfig with kwargs: {kwargs}")
         self.output_hidden_states = kwargs.pop("output_hidden_states", False)
         self.output_attentions = kwargs.pop("output_attentions", False)
         self.use_return_dict = kwargs.pop("return_dict", True)
@@ -77,14 +81,17 @@ class PretrainedConfig:
             setattr(self, key, value)
 
     def to_dict(self):
+        logger.debug("Converting PretrainedConfig to dictionary")
         return self.__dict__.copy()
 
 class PreTrainedModel(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        logger.debug(f"Initialized PreTrainedModel with config: {config}")
 
     def post_init(self):
+        logger.debug("Post initialization of PreTrainedModel")
         # Minimal post initialization.
         pass
 
@@ -94,6 +101,7 @@ class PreTrainedModel(nn.Module):
 
 class GenerationMixin:
     def generate(self, input_ids, **kwargs):
+        logger.debug(f"Generating with input_ids: {input_ids}")
         # A minimal greedy decoding loop for inference.
         self.eval()
         with torch.no_grad():
@@ -106,6 +114,7 @@ class GenerationMixin:
 
 class Cache:
     def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
+        logger.debug(f"Updating cache for layer {layer_idx}")
         # Minimal: no caching, simply return the states.
         return key_states, value_states
 
@@ -114,8 +123,10 @@ class DynamicCache(Cache):
         self.key_cache = {}
         self.value_cache = {}
         self._seen_tokens = {}
+        logger.debug("Initialized DynamicCache")
 
     def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
+        logger.debug(f"Updating DynamicCache for layer {layer_idx}")
         # For minimal inference, simply concatenate along sequence dimension.
         if layer_idx not in self.key_cache:
             self.key_cache[layer_idx] = key_states
@@ -128,6 +139,7 @@ class DynamicCache(Cache):
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
     def get_seq_length(self, layer_idx=0):
+        logger.debug(f"Getting sequence length for layer {layer_idx}")
         return self._seen_tokens.get(layer_idx, 0)
 
 # ------------------------------------------------------------------
@@ -773,16 +785,101 @@ class Qwen2PreTrainedModel(PreTrainedModel, GenerationMixin):
         model = cls(config)
         from safetensors.torch import load_file
         state_dict = {}
+        total_keys_in_files = 0
+
         for filename in os.listdir(model_path):
             if filename.endswith(".safetensors"):
                 file_path = os.path.join(model_path, filename)
-                state_dict.update(load_file(file_path))
+                file_state_dict = load_file(file_path)
+                keys_in_file = list(file_state_dict.keys())
+                num_keys_in_file = len(keys_in_file)
+                logger.debug(f"Loaded {num_keys_in_file} keys from {filename}: {keys_in_file}")
+                total_keys_in_files += num_keys_in_file
+                state_dict.update(file_state_dict)
+        logger.debug(f"Total keys in safetensors files: {total_keys_in_files}")
+
+        # Get model's current state dict keys
+        model_state = model.state_dict()
+        total_model_keys = len(model_state.keys())
+        logger.debug(f"Total keys in model state dict: {total_model_keys}")
+
+        # Compute matched, missing, and unexpected keys
+        pretrained_keys = set(state_dict.keys())
+        model_keys = set(model_state.keys())
+        matched_keys = pretrained_keys & model_keys
+        missing_keys = model_keys - pretrained_keys
+        unexpected_keys = pretrained_keys - model_keys
+        
+        logger.debug(f"Total matched keys: {len(matched_keys)}")
+        logger.debug(f"Matched keys: {matched_keys}")
+        logger.debug(f"Missing keys (in model but not in pretrained): {missing_keys}")
+        logger.debug(f"Unexpected keys (in pretrained but not in model): {unexpected_keys}")
+        if total_model_keys > 0:
+            logger.debug(f"Percentage of keys matched: {len(matched_keys) / total_model_keys:.2%}")
+
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
         if missing_keys:
             logger.warning(f"Missing keys in state dict: {missing_keys}")
         if unexpected_keys:
             logger.warning(f"Unexpected keys in state dict: {unexpected_keys}")
         return model
+
+
+@classmethod
+def from_pretrained(cls, model_path: str, config: Optional[Qwen2Config] = None, *args, **kwargs):
+    # Load configuration
+    if config is None:
+        config_path = os.path.join(model_path, "config.json")
+        if os.path.exists(config_path):
+            config = cls.config_class.from_json_file(config_path)
+        else:
+            raise ValueError("No configuration file found in the model path.")
+    model = cls(config)
+    
+    from safetensors.torch import load_file
+    state_dict = {}
+    total_keys_in_files = 0
+    # Iterate over all safetensors files in the model path
+    for filename in os.listdir(model_path):
+        if filename.endswith(".safetensors"):
+            file_path = os.path.join(model_path, filename)
+            file_state_dict = load_file(file_path)
+            keys_in_file = list(file_state_dict.keys())
+            num_keys_in_file = len(keys_in_file)
+            logger.debug(f"Loaded {num_keys_in_file} keys from {filename}: {keys_in_file}")
+            total_keys_in_files += num_keys_in_file
+            state_dict.update(file_state_dict)
+    logger.debug(f"Total keys in safetensors files: {total_keys_in_files}")
+    
+    # Get model's current state dict keys
+    model_state = model.state_dict()
+    total_model_keys = len(model_state.keys())
+    logger.debug(f"Total keys in model state dict: {total_model_keys}")
+    
+    # Compute matched, missing, and unexpected keys
+    pretrained_keys = set(state_dict.keys())
+    model_keys = set(model_state.keys())
+    matched_keys = pretrained_keys & model_keys
+    missing_keys = model_keys - pretrained_keys
+    unexpected_keys = pretrained_keys - model_keys
+    
+    logger.debug(f"Total matched keys: {len(matched_keys)}")
+    logger.debug(f"Matched keys: {matched_keys}")
+    logger.debug(f"Missing keys (in model but not in pretrained): {missing_keys}")
+    logger.debug(f"Unexpected keys (in pretrained but not in model): {unexpected_keys}")
+    if total_model_keys > 0:
+        logger.debug(f"Percentage of keys matched: {len(matched_keys) / total_model_keys:.2%}")
+    
+    # Load the state dict (this will also return missing and unexpected keys)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        logger.warning(f"Missing keys in state dict after load: {missing}")
+    if unexpected:
+        logger.warning(f"Unexpected keys in state dict after load: {unexpected}")
+    
+    return model
+
+
 
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):
     def __init__(self, config):
@@ -829,6 +926,7 @@ class Qwen2ForSequenceClassification(Qwen2PreTrainedModel):
         self.model = Qwen2Model(config)
         self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
         self.post_init()
+        logger.debug(f"Initialized Qwen2ForSequenceClassification with config: {config}")
 
     def forward(self, input_ids: Optional[torch.LongTensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
@@ -840,6 +938,7 @@ class Qwen2ForSequenceClassification(Qwen2PreTrainedModel):
                 output_attentions: Optional[bool] = None,
                 output_hidden_states: Optional[bool] = None,
                 return_dict: Optional[bool] = None) -> BaseModelOutputWithPast:
+        logger.debug("Forward pass of Qwen2ForSequenceClassification")
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids,
                              past_key_values=past_key_values, inputs_embeds=inputs_embeds,
                              use_cache=use_cache, output_attentions=output_attentions,
