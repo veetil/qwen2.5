@@ -15,6 +15,7 @@
 """Tokenization classes for Qwen2 (fast version)."""
 
 from typing import Optional, Tuple
+import os
 
 # Here we assume that a fast tokenizer base class is available.
 # For this flat file, we provide a minimal stub for PreTrainedTokenizerFast.
@@ -30,13 +31,21 @@ class PreTrainedTokenizerFast:
     def save_vocabulary(self, save_directory: str, name: Optional[str] = None):
         # Minimal placeholder: in a real scenario this would save the fast tokenizer’s model files.
         return [os.path.join(save_directory, "tokenizer.json")]
-        
-import os
-from ...tokenization_utils import AddedToken
-from ...utils import logging
-from .tokenization_qwen2 import Qwen2Tokenizer
 
-logger = logging.get_logger(__name__)
+# Import Qwen2Tokenizer and AddedToken from the slow tokenizer.
+from .tokenization_qwen2 import Qwen2Tokenizer, AddedToken
+
+# Minimal logging
+class Logger:
+    def warning_once(self, message):
+        print("Warning:", message)
+    def info(self, message):
+        print("Info:", message)
+
+def get_logger(name):
+    return Logger()
+
+logger = get_logger(__name__)
 
 VOCAB_FILES_NAMES = {
     "vocab_file": "vocab.json",
@@ -84,6 +93,31 @@ class Qwen2TokenizerFast(PreTrainedTokenizerFast):
             **kwargs,
         )
 
+    def __call__(self, text, return_tensors=None, **kwargs):
+        # Minimal implementation: use the slow tokenizer to tokenize the text.
+        # Cache the slow tokenizer instance on first call.
+        if not hasattr(self, "_slow_tokenizer"):
+            # Here we assume that the slow tokenizer has a from_pretrained method.
+            self._slow_tokenizer = self.slow_tokenizer_class.from_pretrained(os.path.dirname(self.vocab_file))
+        # Tokenize the text using the slow tokenizer.
+        tokens = self._slow_tokenizer.tokenize(text)
+        input_ids = self._slow_tokenizer.convert_tokens_to_ids(tokens)
+        if return_tensors == "pt":
+            import torch
+            input_ids = torch.tensor([input_ids])
+            attention_mask = torch.ones_like(input_ids)
+            return {"input_ids": input_ids, "attention_mask": attention_mask}
+        return input_ids
+
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str]:
         files = self._tokenizer.model.save(save_directory, name=filename_prefix)
         return tuple(files)
+
+    @classmethod
+    def from_pretrained(cls, model_path: str, **kwargs):
+        # Minimal implementation to load files from the model_path.
+        vocab_file = os.path.join(model_path, VOCAB_FILES_NAMES["vocab_file"])
+        merges_file = os.path.join(model_path, VOCAB_FILES_NAMES["merges_file"])
+        tokenizer_file = os.path.join(model_path, VOCAB_FILES_NAMES["tokenizer_file"])
+        return cls(vocab_file=vocab_file, merges_file=merges_file, tokenizer_file=tokenizer_file, **kwargs)
+

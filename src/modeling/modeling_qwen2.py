@@ -202,6 +202,8 @@ def _compute_default_rope_parameters(config: Optional[PretrainedConfig] = None,
     inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).float().to(device) / dim))
     return inv_freq, attention_factor
 
+# For minimality, we set only the "default" rope type.
+
 def _compute_linear_scaling_rope_parameters(config: Optional[PretrainedConfig] = None,
                                             device: Optional[torch.device] = None,
                                             seq_len: Optional[int] = None,
@@ -290,7 +292,7 @@ def _compute_longrope_parameters(config: PretrainedConfig, device: torch.device,
     if attention_factor is None:
         attention_factor = math.sqrt(1 + math.log(factor) / math.log(original_max_position_embeddings)) if factor > 1.0 else 1.0
     ext_factors = torch.tensor(long_factor, dtype=torch.float32, device=device) if (seq_len and seq_len > original_max_position_embeddings) else torch.tensor(short_factor, dtype=torch.float32, device=device)
-    inv_freq_shape = torch.arange(0, dim, 2, dtype=torch.int64, device=device).float() / dim
+    inv_freq_shape = torch.arange(0, dim, dtype=torch.int64, device=device).float() / dim
     inv_freq = 1.0 / (ext_factors * base**inv_freq_shape)
     return inv_freq, attention_factor
 
@@ -306,7 +308,7 @@ def _compute_llama3_parameters(config: PretrainedConfig, device: torch.device, s
     inv_freq_llama = torch.where(wavelen > low_freq_wavelen, inv_freq / factor, inv_freq)
     smooth_factor = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
     smoothed_inv_freq = (1 - smooth_factor) * inv_freq_llama / factor + smooth_factor * inv_freq_llama
-    is_medium_freq = ~(wavelen < high_freq_wavelen) * ~(wavelen > low_freq_wavelen)
+    is_medium_freq = ~(wavelen < high_freq_wavelen) * ~(wavelen > high_freq_wavelen)
     inv_freq_llama = torch.where(is_medium_freq, smoothed_inv_freq, inv_freq_llama)
     return inv_freq_llama, attention_factor
 
@@ -510,10 +512,12 @@ class Qwen2Config(PretrainedConfig):
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
+
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
+        self.tie_word_embeddings = tie_word_embeddings
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self.attention_dropout = attention_dropout
@@ -523,15 +527,21 @@ class Qwen2Config(PretrainedConfig):
         rope_config_validation(self)
         super().__init__(**kwargs)
 
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any], **kwargs) -> "Qwen2Config":
+        return cls(**config_dict, **kwargs)
+
+    @classmethod
+    def from_json_file(cls, json_file: str) -> "Qwen2Config":
+        with open(json_file, "r", encoding="utf-8") as reader:
+            config_dict = json.load(reader)
+        return cls.from_dict(config_dict)
+
 # ------------------------------------------------------------------
 # (Below: Implement Qwen2 Model classes based on reference)
 # For brevity, we implement only key classes with minimal stubs.
 # ------------------------------------------------------------------
 
-# Importing necessary base implementations from minimal Llama and Mistral files:
-# For this flattened file, we inline necessary classes.
-
-# Minimal LlamaMLP (inherits from minimal LlamaMLP functionality)
 class LlamaMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -545,7 +555,6 @@ class LlamaMLP(nn.Module):
     def forward(self, x):
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
-# Minimal LlamaAttention (used as base for Qwen2Attention)
 class LlamaAttention(nn.Module):
     def __init__(self, config, layer_idx: int):
         super().__init__()
@@ -572,14 +581,25 @@ class LlamaAttention(nn.Module):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
         attn_output, attn_weights = eager_attention_forward(
-            self, query_states, key_states, value_states, attention_mask, self.scaling, dropout=self.attention_dropout, **kwargs
+            self, query_states, key_states, value_states, attention_mask, self.scaling,
+            dropout=self.attention_dropout, **kwargs
         )
         out_shape = input_shape + (self.num_key_value_groups * self.head_dim,)
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
-# Minimal Qwen2 classes
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    def rotate_half(x):
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
+        return torch.cat((-x2, x1), dim=-1)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
 class Qwen2MLP(LlamaMLP):
     def __init__(self, config):
         super().__init__(config)
@@ -595,32 +615,6 @@ class Qwen2Attention(LlamaAttention):
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True)
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
 
-class Qwen2DecoderLayer(nn.Module):
-    def __init__(self, config: Qwen2Config, layer_idx: int):
-        super().__init__()
-        self.self_attn = Qwen2Attention(config, layer_idx)
-        self.mlp = Qwen2MLP(config)
-        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        if config.use_sliding_window and getattr(config, "_attn_implementation", "eager") != "flash_attention_2":
-            logger.warning("Sliding Window Attention is enabled but not implemented for this attn implementation.")
-
-    def forward(self, hidden_states, attention_mask=None, position_ids=None, past_key_value=None,
-                output_attentions=False, use_cache=False, cache_position=None, position_embeddings=None, **kwargs):
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        attn_out, attn_weights = self.self_attn(hidden_states, position_embeddings, attention_mask, past_key_value, cache_position, **kwargs)
-        hidden_states = residual + attn_out
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-        outputs = (hidden_states,)
-        if output_attentions:
-            outputs += (attn_weights,)
-        return outputs
-
-# Minimal RMSNorm for Qwen2 (same as LlamaRMSNorm)
 class Qwen2RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         super().__init__()
@@ -634,7 +628,6 @@ class Qwen2RMSNorm(nn.Module):
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype)
 
-# Minimal Qwen2RotaryEmbedding (same as in reference)
 class Qwen2RotaryEmbedding(nn.Module):
     def __init__(self, config: Qwen2Config, device=None):
         super().__init__()
@@ -678,7 +671,31 @@ class Qwen2RotaryEmbedding(nn.Module):
         sin = sin * self.attention_scaling
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
-# Minimal Qwen2Model: inherit from a minimal MistralModel stub (for inference, we only need forward)
+class Qwen2DecoderLayer(nn.Module):
+    def __init__(self, config: Qwen2Config, layer_idx: int):
+        super().__init__()
+        self.self_attn = Qwen2Attention(config, layer_idx)
+        self.mlp = Qwen2MLP(config)
+        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        if config.use_sliding_window and getattr(config, "_attn_implementation", "eager") != "flash_attention_2":
+            logger.warning("Sliding Window Attention is enabled but not implemented for this attn implementation.")
+
+    def forward(self, hidden_states, attention_mask=None, position_ids=None, past_key_value=None,
+                output_attentions=False, use_cache=False, cache_position=None, position_embeddings=None, **kwargs):
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        attn_out, attn_weights = self.self_attn(hidden_states, position_embeddings, attention_mask, past_key_value, cache_position, **kwargs)
+        hidden_states = residual + attn_out
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+        outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (attn_weights,)
+        return outputs
+
 class MistralModel(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -730,7 +747,6 @@ class MistralModel(nn.Module):
 class Qwen2Model(MistralModel):
     pass  # Inherits behavior from MistralModel
 
-# Minimal Qwen2ForCausalLM, SequenceClassification, TokenClassification, and QuestionAnswering
 class Qwen2PreTrainedModel(PreTrainedModel, GenerationMixin):
     config_class = Qwen2Config
     base_model_prefix = "model"
@@ -744,6 +760,29 @@ class Qwen2PreTrainedModel(PreTrainedModel, GenerationMixin):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+
+    @classmethod
+    def from_pretrained(cls, model_path: str, config: Optional[Qwen2Config] = None, *args, **kwargs):
+        # Minimal implementation of from_pretrained:
+        if config is None:
+            config_path = os.path.join(model_path, "config.json")
+            if os.path.exists(config_path):
+                config = cls.config_class.from_json_file(config_path)
+            else:
+                raise ValueError("No configuration file found in the model path.")
+        model = cls(config)
+        from safetensors.torch import load_file
+        state_dict = {}
+        for filename in os.listdir(model_path):
+            if filename.endswith(".safetensors"):
+                file_path = os.path.join(model_path, filename)
+                state_dict.update(load_file(file_path))
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        if missing_keys:
+            logger.warning(f"Missing keys in state dict: {missing_keys}")
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys in state dict: {unexpected_keys}")
+        return model
 
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):
     def __init__(self, config):
@@ -774,7 +813,6 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
                              output_attentions=output_attentions, output_hidden_states=output_hidden_states,
                              return_dict=return_dict, cache_position=cache_position, **kwargs)
         hidden_states = outputs.last_hidden_state
-        # Compute logits (for inference, we assume logits for all tokens)
         logits = self.lm_head(hidden_states)
         loss = None
         if labels is not None:
