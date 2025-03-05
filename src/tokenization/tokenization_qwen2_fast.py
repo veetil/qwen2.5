@@ -93,21 +93,49 @@ class Qwen2TokenizerFast(PreTrainedTokenizerFast):
             **kwargs,
         )
 
+
     def __call__(self, text, return_tensors=None, **kwargs):
         # Minimal implementation: use the slow tokenizer to tokenize the text.
-        # Cache the slow tokenizer instance on first call.
         if not hasattr(self, "_slow_tokenizer"):
-            # Here we assume that the slow tokenizer has a from_pretrained method.
-            self._slow_tokenizer = self.slow_tokenizer_class.from_pretrained(os.path.dirname(self.vocab_file))
-        # Tokenize the text using the slow tokenizer.
-        tokens = self._slow_tokenizer.tokenize(text)
-        input_ids = self._slow_tokenizer.convert_tokens_to_ids(tokens)
+            model_dir = os.path.dirname(self.vocab_file)
+            self._slow_tokenizer = self.slow_tokenizer_class.from_pretrained(
+                os.path.join(model_dir, VOCAB_FILES_NAMES["vocab_file"]),
+                os.path.join(model_dir, VOCAB_FILES_NAMES["merges_file"])
+            )
+        # Use the slow tokenizer’s _tokenize method
+        tokens = self._slow_tokenizer._tokenize(text)
+        input_ids = [self._slow_tokenizer._convert_token_to_id(token) for token in tokens]
+
         if return_tensors == "pt":
             import torch
             input_ids = torch.tensor([input_ids])
             attention_mask = torch.ones_like(input_ids)
             return {"input_ids": input_ids, "attention_mask": attention_mask}
         return input_ids
+
+    # def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False, **kwargs):
+    #     if not hasattr(self, "_slow_tokenizer"):
+    #         model_dir = os.path.dirname(self.vocab_file)
+    #         self._slow_tokenizer = self.slow_tokenizer_class.from_pretrained(
+    #             os.path.join(model_dir, VOCAB_FILES_NAMES["vocab_file"]),
+    #             os.path.join(model_dir, VOCAB_FILES_NAMES["merges_file"])
+    #         )
+    #     return self._slow_tokenizer.decode(
+    #         token_ids,
+    #         skip_special_tokens=skip_special_tokens,
+    #         clean_up_tokenization_spaces=clean_up_tokenization_spaces,
+    #         **kwargs
+    #     )
+
+    def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False, **kwargs):
+        if not hasattr(self, "_slow_tokenizer"):
+            model_dir = os.path.dirname(self.vocab_file)
+            self._slow_tokenizer = self.slow_tokenizer_class.from_pretrained(
+                os.path.join(model_dir, VOCAB_FILES_NAMES["vocab_file"]),
+                os.path.join(model_dir, VOCAB_FILES_NAMES["merges_file"])
+            )
+        return self._slow_tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens, clean_up_tokenization_spaces=clean_up_tokenization_spaces, **kwargs)
+
 
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str]:
         files = self._tokenizer.model.save(save_directory, name=filename_prefix)

@@ -648,13 +648,19 @@ def main():
     # Tokenize the input prompt.
     inputs = tokenizer(args.prompt, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
+    logger.info(f"Tokenized input_ids: {inputs.get('input_ids')}")
 
     # Generate text using the autoregressive loop.
     with torch.no_grad():
         outputs = model.generate(**inputs, max_length=args.max_length)
+        logger.info(f"Generated token ids: {outputs}")
 
     # Decode and print the generated text.
+    full_text = tokenizer.decode(outputs[0], skip_special_tokens=False)
     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    logger.info(f"Decoded text (with special tokens): {full_text}")
+    logger.info(f"Decoded text (skipping special tokens): {generated_text}")
+
     print("=== Generated Text ===")
     print(generated_text)
 

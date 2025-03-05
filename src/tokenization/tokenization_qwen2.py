@@ -223,8 +223,17 @@ class Qwen2Tokenizer(PreTrainedTokenizer):
         text = bytearray([self.byte_decoder[c] for c in text]).decode("utf-8", errors=self.errors)
         return text
 
+    # def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False, spaces_between_special_tokens=False, **kwargs):
+    #     return super().decode(token_ids, skip_special_tokens=skip_special_tokens, clean_up_tokenization_spaces=clean_up_tokenization_spaces, spaces_between_special_tokens=spaces_between_special_tokens, **kwargs)
+
     def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False, spaces_between_special_tokens=False, **kwargs):
-        return super().decode(token_ids, skip_special_tokens=skip_special_tokens, clean_up_tokenization_spaces=clean_up_tokenization_spaces, spaces_between_special_tokens=spaces_between_special_tokens, **kwargs)
+        # Convert each token id to its token string; replace None with an empty string.
+        tokens = [self._convert_id_to_token(token_id) for token_id in token_ids]
+        tokens = [token if token is not None else "" for token in tokens]
+        return " ".join(tokens)
+
+
+
 
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str]:
         if not os.path.isdir(save_directory):
