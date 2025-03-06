@@ -99,14 +99,143 @@ class PreTrainedModel(nn.Module):
 # Minimal GenerationMixin (for .generate())
 # ------------------------------------------------------------------
 
+# class GenerationMixin:
+#     def generate(self, input_ids, **kwargs):
+#         logger.debug(f"Generating with input_ids: {input_ids}")
+#         # A minimal greedy decoding loop for inference.
+#         self.eval()
+#         with torch.no_grad():
+#             # For simplicity, assume generate returns input_ids (stub).
+#             return input_ids
+        
+
+# class GenerationMixin:
+#     def generate(self, input_ids, max_length=50, **kwargs):
+#         """
+#         Greedy autoregressive decoding with fallback handling for output types.
+        
+#         Args:
+#             input_ids (torch.LongTensor): Initial input token IDs of shape (batch_size, seq_len)
+#             max_length (int): Maximum total length (in tokens) of the generated sequence.
+#             **kwargs: Additional keyword arguments passed to forward().
+        
+#         Returns:
+#             torch.LongTensor: Generated token IDs.
+#         """
+#         self.eval()
+#         generated = input_ids
+#         past_key_values = None
+#         iteration = 0
+#         logger.info(f"Starting generation. Initial sequence length: {generated.shape[1]}")
+
+#         with torch.no_grad():
+#             while generated.shape[1] < max_length:
+#                 iteration += 1
+#                 logger.debug(f"Iteration {iteration}: generated sequence shape: {generated.shape}")
+#                 outputs = self.forward(
+#                     input_ids=generated,
+#                     past_key_values=past_key_values,
+#                     use_cache=True,
+#                     **kwargs
+#                 )
+#                 if hasattr(outputs, "last_hidden_state"):
+#                     last_hidden_state = outputs.last_hidden_state
+#                     past_key_values = outputs.past_key_values
+#                 else:
+#                     last_hidden_state = outputs
+#                     past_key_values = None  # Disable caching if outputs is a plain tensor.
+#                     logger.warning(f"[Generation] Iteration {iteration}: Forward output is a plain tensor; caching is disabled. Tensor shape: {last_hidden_state.shape}")
+                
+#                 logger.debug(f"[Generation] Iteration {iteration}: Shape before lm_head: {last_hidden_state.shape}")
+#                 logits = self.lm_head(last_hidden_state)
+#                 logger.debug(f"[Generation] Iteration {iteration}: Logits shape: {logits.shape}")
+#                 next_token_logits = logits[:, -1, :]
+#                 logger.debug(f"[Generation] Iteration {iteration}: Next token logits shape: {next_token_logits.shape}")
+#                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+
+
+
+
+#                 logger.debug(f"Iteration {iteration}: next token shape: {next_token.shape}, value: {next_token.squeeze().tolist()}")
+
+#                 if hasattr(self.config, "eos_token_id") and (next_token == self.config.eos_token_id).all():
+#                     logger.info(f"EOS token encountered at iteration {iteration}. Stopping generation.")
+#                     generated = torch.cat([generated, next_token], dim=1)
+#                     break
+
+#                 generated = torch.cat([generated, next_token], dim=1)
+#                 logger.debug(f"Iteration {iteration}: updated generated shape: {generated.shape}")
+#             logger.info(f"Finished generation. Final sequence length: {generated.shape[1]}")
+#         return generated
+
+
 class GenerationMixin:
-    def generate(self, input_ids, **kwargs):
-        logger.debug(f"Generating with input_ids: {input_ids}")
-        # A minimal greedy decoding loop for inference.
+    def generate(self, input_ids, max_length=50, **kwargs):
+        """
+        Greedy autoregressive decoding that uses only the new token in subsequent iterations
+        and avoids reapplying the lm_head if the forward pass already outputs logits.
+        
+        Args:
+            input_ids (torch.LongTensor): Initial input token IDs of shape (batch_size, seq_len)
+            max_length (int): Maximum total length (in tokens) of the generated sequence.
+            **kwargs: Additional keyword arguments passed to forward().
+        
+        Returns:
+            torch.LongTensor: Generated token IDs.
+        """
         self.eval()
+        generated = input_ids
+        past_key_values = None
+        iteration = 0
+        logger.info(f"Starting generation. Initial sequence length: {generated.shape[1]}")
+        
         with torch.no_grad():
-            # For simplicity, assume generate returns input_ids (stub).
-            return input_ids
+            while generated.shape[1] < max_length:
+                iteration += 1
+                logger.debug(f"Iteration {iteration}: generated sequence shape: {generated.shape}")
+                # On first iteration, pass full sequence; afterwards, pass only the last token.
+                current_input = generated if past_key_values is None else generated[:, -1:]
+                
+                outputs = self.forward(
+                    input_ids=current_input,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    return_dict=True,
+                    **kwargs
+                )
+                
+                # The forward pass returns a structured output with last_hidden_state and past_key_values.
+                last_hidden_state = outputs.last_hidden_state
+                past_key_values = outputs.past_key_values
+                
+                # Check if the output is already logits (vocab dimension) or raw hidden states.
+                if last_hidden_state.size(-1) == self.config.vocab_size:
+                    logits = last_hidden_state
+                else:
+                    raise ValueError(f"Unexpected output shape: {last_hidden_state.shape}")
+                    # logits = self.lm_head(last_hidden_state)
+                
+                logger.debug(f"[Generation] Iteration {iteration}: Logits shape: {logits.shape}")
+                next_token_logits = logits[:, -1, :]
+                logger.debug(f"[Generation] Iteration {iteration}: Next token logits shape: {next_token_logits.shape}")
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+                logger.debug(f"[Generation] Iteration {iteration}: Next token: {next_token.squeeze().tolist()}")
+                
+                if hasattr(self.config, "eos_token_id") and (next_token == self.config.eos_token_id).all():
+                    logger.info(f"EOS token encountered at iteration {iteration}. Stopping generation.")
+                    generated = torch.cat([generated, next_token], dim=1)
+                    break
+                
+                generated = torch.cat([generated, next_token], dim=1)
+                logger.debug(f"[Generation] Iteration {iteration}: updated generated shape: {generated.shape}")
+            
+            logger.info(f"Finished generation. Final sequence length: {generated.shape[1]}")
+        return generated
+
+
+
 
 # ------------------------------------------------------------------
 # Minimal Cache implementations
@@ -191,6 +320,49 @@ ACT2FN = {
     "silu": lambda x: x * torch.sigmoid(x),
     "gelu": F.gelu,
 }
+
+
+# ------------------------------------------------------------------
+# Additional Helper Functions for Attention
+# ------------------------------------------------------------------
+
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is equivalent to torch.repeat_interleave(x, dim=1, repeats=n_rep).
+    It converts hidden states from shape (batch, num_key_value_heads, seqlen, head_dim)
+    to (batch, num_attention_heads, seqlen, head_dim).
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+def eager_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    attn_output = torch.matmul(attn_weights, value_states)
+    attn_output = attn_output.transpose(1, 2).contiguous()
+
+    return attn_output, attn_weights
+
 
 # ------------------------------------------------------------------
 # Modeling Rope Utils (from modeling_rope_utils.py)
@@ -587,8 +759,10 @@ class LlamaAttention(nn.Module):
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        logger.debug(f"[Attention] q_proj shape: {query_states.shape}, k_proj shape: {key_states.shape}, v_proj shape: {value_states.shape}")
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        logger.debug(f"[Attention] After rotary embeddings: query {query_states.shape}, key {key_states.shape}")
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
@@ -596,9 +770,12 @@ class LlamaAttention(nn.Module):
             self, query_states, key_states, value_states, attention_mask, self.scaling,
             dropout=self.attention_dropout, **kwargs
         )
+        logger.debug(f"[Attention] Raw attention output shape: {attn_output.shape}")
         out_shape = input_shape + (self.num_key_value_groups * self.head_dim,)
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        logger.debug(f"[Attention] Reshaped attention output shape: {attn_output.shape}")
         attn_output = self.o_proj(attn_output)
+        logger.debug(f"[Attention] After o_proj, attention output shape: {attn_output.shape}")
         return attn_output, attn_weights
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -695,14 +872,21 @@ class Qwen2DecoderLayer(nn.Module):
 
     def forward(self, hidden_states, attention_mask=None, position_ids=None, past_key_value=None,
                 output_attentions=False, use_cache=False, cache_position=None, position_embeddings=None, **kwargs):
+        logger.debug(f"[DecoderLayer] Input shape: {hidden_states.shape}")
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
+        logger.debug(f"[DecoderLayer] After input_layernorm: {hidden_states.shape}")
         attn_out, attn_weights = self.self_attn(hidden_states, position_embeddings, attention_mask, past_key_value, cache_position, **kwargs)
+        logger.debug(f"[DecoderLayer] Attention output shape: {attn_out.shape}")
         hidden_states = residual + attn_out
+        logger.debug(f"[DecoderLayer] After residual addition (post-attn): {hidden_states.shape}")
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        logger.debug(f"[DecoderLayer] After post-attention layernorm: {hidden_states.shape}")
         hidden_states = self.mlp(hidden_states)
+        logger.debug(f"[DecoderLayer] After MLP: {hidden_states.shape}")
         hidden_states = residual + hidden_states
+        logger.debug(f"[DecoderLayer] Final output shape: {hidden_states.shape}")
         outputs = (hidden_states,)
         if output_attentions:
             outputs += (attn_weights,)
@@ -825,59 +1009,59 @@ class Qwen2PreTrainedModel(PreTrainedModel, GenerationMixin):
         return model
 
 
-@classmethod
-def from_pretrained(cls, model_path: str, config: Optional[Qwen2Config] = None, *args, **kwargs):
-    # Load configuration
-    if config is None:
-        config_path = os.path.join(model_path, "config.json")
-        if os.path.exists(config_path):
-            config = cls.config_class.from_json_file(config_path)
-        else:
-            raise ValueError("No configuration file found in the model path.")
-    model = cls(config)
+# @classmethod
+# def from_pretrained(cls, model_path: str, config: Optional[Qwen2Config] = None, *args, **kwargs):
+#     # Load configuration
+#     if config is None:
+#         config_path = os.path.join(model_path, "config.json")
+#         if os.path.exists(config_path):
+#             config = cls.config_class.from_json_file(config_path)
+#         else:
+#             raise ValueError("No configuration file found in the model path.")
+#     model = cls(config)
     
-    from safetensors.torch import load_file
-    state_dict = {}
-    total_keys_in_files = 0
-    # Iterate over all safetensors files in the model path
-    for filename in os.listdir(model_path):
-        if filename.endswith(".safetensors"):
-            file_path = os.path.join(model_path, filename)
-            file_state_dict = load_file(file_path)
-            keys_in_file = list(file_state_dict.keys())
-            num_keys_in_file = len(keys_in_file)
-            logger.debug(f"Loaded {num_keys_in_file} keys from {filename}: {keys_in_file}")
-            total_keys_in_files += num_keys_in_file
-            state_dict.update(file_state_dict)
-    logger.debug(f"Total keys in safetensors files: {total_keys_in_files}")
+#     from safetensors.torch import load_file
+#     state_dict = {}
+#     total_keys_in_files = 0
+#     # Iterate over all safetensors files in the model path
+#     for filename in os.listdir(model_path):
+#         if filename.endswith(".safetensors"):
+#             file_path = os.path.join(model_path, filename)
+#             file_state_dict = load_file(file_path)
+#             keys_in_file = list(file_state_dict.keys())
+#             num_keys_in_file = len(keys_in_file)
+#             logger.debug(f"Loaded {num_keys_in_file} keys from {filename}: {keys_in_file}")
+#             total_keys_in_files += num_keys_in_file
+#             state_dict.update(file_state_dict)
+#     logger.debug(f"Total keys in safetensors files: {total_keys_in_files}")
     
-    # Get model's current state dict keys
-    model_state = model.state_dict()
-    total_model_keys = len(model_state.keys())
-    logger.debug(f"Total keys in model state dict: {total_model_keys}")
+#     # Get model's current state dict keys
+#     model_state = model.state_dict()
+#     total_model_keys = len(model_state.keys())
+#     logger.debug(f"Total keys in model state dict: {total_model_keys}")
     
-    # Compute matched, missing, and unexpected keys
-    pretrained_keys = set(state_dict.keys())
-    model_keys = set(model_state.keys())
-    matched_keys = pretrained_keys & model_keys
-    missing_keys = model_keys - pretrained_keys
-    unexpected_keys = pretrained_keys - model_keys
+#     # Compute matched, missing, and unexpected keys
+#     pretrained_keys = set(state_dict.keys())
+#     model_keys = set(model_state.keys())
+#     matched_keys = pretrained_keys & model_keys
+#     missing_keys = model_keys - pretrained_keys
+#     unexpected_keys = pretrained_keys - model_keys
     
-    logger.debug(f"Total matched keys: {len(matched_keys)}")
-    logger.debug(f"Matched keys: {matched_keys}")
-    logger.debug(f"Missing keys (in model but not in pretrained): {missing_keys}")
-    logger.debug(f"Unexpected keys (in pretrained but not in model): {unexpected_keys}")
-    if total_model_keys > 0:
-        logger.debug(f"Percentage of keys matched: {len(matched_keys) / total_model_keys:.2%}")
+#     logger.debug(f"Total matched keys: {len(matched_keys)}")
+#     logger.debug(f"Matched keys: {matched_keys}")
+#     logger.debug(f"Missing keys (in model but not in pretrained): {missing_keys}")
+#     logger.debug(f"Unexpected keys (in pretrained but not in model): {unexpected_keys}")
+#     if total_model_keys > 0:
+#         logger.debug(f"Percentage of keys matched: {len(matched_keys) / total_model_keys:.2%}")
     
-    # Load the state dict (this will also return missing and unexpected keys)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing:
-        logger.warning(f"Missing keys in state dict after load: {missing}")
-    if unexpected:
-        logger.warning(f"Unexpected keys in state dict after load: {unexpected}")
+#     # Load the state dict (this will also return missing and unexpected keys)
+#     missing, unexpected = model.load_state_dict(state_dict, strict=False)
+#     if missing:
+#         logger.warning(f"Missing keys in state dict after load: {missing}")
+#     if unexpected:
+#         logger.warning(f"Unexpected keys in state dict after load: {unexpected}")
     
-    return model
+#     return model
 
 
 

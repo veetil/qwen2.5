@@ -616,9 +616,9 @@ def main():
     parser = argparse.ArgumentParser(description="Run inference with Qwen2")
     parser.add_argument("--model_path", default="model", type=str, required=True,
                         help="Path or identifier of the pretrained Qwen2 model (e.g., a local folder or model hub id)")
-    parser.add_argument("--prompt", type=str, default="Hello, how are you?",
+    parser.add_argument("--prompt", type=str, default="<|begin▁of▁sentence|>You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|User|>What is the sum of 1 and 2?<|Assistant|>",
                         help="Input text prompt for generation")
-    parser.add_argument("--max_length", type=int, default=50,
+    parser.add_argument("--max_length", type=int, default=1000,
                         help="Maximum length of the generated sequence")
     parser.add_argument("--use_fast_tokenizer", action="store_true",
                         help="If set, uses the fast tokenizer version; otherwise uses the slow tokenizer")
@@ -658,6 +658,9 @@ def main():
     # Decode and print the generated text.
     full_text = tokenizer.decode(outputs[0], skip_special_tokens=False)
     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    print(full_text)
+    print('Generated Text:')
+    print(generated_text)
     logger.info(f"Decoded text (with special tokens): {full_text}")
     logger.info(f"Decoded text (skipping special tokens): {generated_text}")
 
