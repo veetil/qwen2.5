@@ -229,8 +229,8 @@ class Qwen2Tokenizer(PreTrainedTokenizer):
     def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False, spaces_between_special_tokens=False, **kwargs):
         # Convert each token id to its token string; replace None with an empty string.
         for i in token_ids:
-            print(i,'->',self._convert_id_to_token(i))
-        tokens = [self._convert_id_to_token(token_id) for token_id in token_ids]
+            print(i,'->',self._convert_id_to_token(int(i)))
+        tokens = [self._convert_id_to_token(int(token_id)) for token_id in token_ids]
 
         tokens = [token if token is not None else "" for token in tokens]
         return " ".join(tokens)

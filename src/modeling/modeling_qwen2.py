@@ -22,7 +22,7 @@ from torch import nn
 
 import logging as py_logging
 logger = py_logging.getLogger(__name__)
-logger.setLevel(py_logging.DEBUG)  # Set to DEBUG for detailed logs
+logger.setLevel(py_logging.INFO)  # Set to DEBUG for detailed logs
 if not logger.handlers:
     handler = py_logging.StreamHandler()
     formatter = py_logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -192,22 +192,42 @@ class GenerationMixin:
         
         with torch.no_grad():
             while generated.shape[1] < max_length:
+                if not self.config.use_cache:
+                    past_key_values = None  # force it off, just to be safe
+
+
                 iteration += 1
                 logger.debug(f"Iteration {iteration}: generated sequence shape: {generated.shape}")
                 # On first iteration, pass full sequence; afterwards, pass only the last token.
-                current_input = generated if past_key_values is None else generated[:, -1:]
+                # current_input = generated if not self.config.use_cache else generated[:, -1:]
                 
+                if self.config.use_cache:
+                    # If caching is enabled, pass the full sequence on the first iteration,
+                    # then only the last token thereafter.
+                    current_input = generated if past_key_values is None else generated[:, -1:]
+                else:
+                    # When caching is disabled, always pass the full sequence.
+                    current_input = generated
+
+
                 outputs = self.forward(
                     input_ids=current_input,
                     past_key_values=past_key_values,
-                    use_cache=True,
+                    use_cache=self.config.use_cache,  # Use the configuration flag
                     return_dict=True,
                     **kwargs
                 )
                 
                 # The forward pass returns a structured output with last_hidden_state and past_key_values.
                 last_hidden_state = outputs.last_hidden_state
-                past_key_values = outputs.past_key_values
+
+                if not self.config.use_cache:
+                    past_key_values = None
+                else:
+                    past_key_values = outputs.past_key_values
+
+
+                # past_key_values = outputs.past_key_values
                 
                 # Check if the output is already logits (vocab dimension) or raw hidden states.
                 if last_hidden_state.size(-1) == self.config.vocab_size:
@@ -913,16 +933,51 @@ class MistralModel(nn.Module):
             raise ValueError("Specify exactly one of input_ids or inputs_embeds")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-        if past_key_values is None:
+        if past_key_values is None and use_cache:
             past_key_values = DynamicCache()
+
         if cache_position is None:
-            past_seen = past_key_values.get_seq_length() if past_key_values is not None else 0
+            if use_cache and past_key_values is not None:
+                past_seen = past_key_values.get_seq_length()
+            else:
+                past_seen = 0
             cache_position = torch.arange(past_seen, past_seen + inputs_embeds.shape[1], device=inputs_embeds.device)
+
+
+        # if cache_position is None:
+        #     past_seen = past_key_values.get_seq_length() if past_key_values is not None else 0
+        #     cache_position = torch.arange(past_seen, past_seen + inputs_embeds.shape[1], device=inputs_embeds.device)
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
-        causal_mask = None  # For minimal inference, assume causal mask is computed externally or not needed.
+        # causal_mask = None  # For minimal inference, assume causal mask is computed externally or not needed.
+        # hidden_states = inputs_embeds
+        # pos_emb = self.rotary_emb(hidden_states, position_ids)
+
+        # If use_cache=False, build a causal mask that is [batch_size, 1, seq_len, seq_len]
+        # so each token only attends up to itself.
+        if not use_cache:
+            # seq_len = inputs_embeds.shape[1]
+            batch_size = inputs_embeds.shape[0]
+            seq_len = inputs_embeds.shape[1]
+            # The standard “triu” style mask sets attention_mask[i,j] = -inf if j > i
+            # so tokens cannot attend to “future” positions:
+            causal_mask = torch.full(
+                (1, 1, seq_len, seq_len),
+                float("-inf"),
+                device=inputs_embeds.device,
+                dtype=inputs_embeds.dtype
+            )
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+            # shape is now [1, 1, seq_len, seq_len]; expand to [batch_size, 1, seq_len, seq_len]
+            causal_mask = causal_mask.expand(batch_size, 1, seq_len, seq_len)
+        else:
+            # keep same for caching
+            causal_mask = None
+
         hidden_states = inputs_embeds
         pos_emb = self.rotary_emb(hidden_states, position_ids)
+
+
         all_hidden_states = [] if output_hidden_states else None
         all_self_attns = [] if output_attentions else None
         for layer in self.layers:
