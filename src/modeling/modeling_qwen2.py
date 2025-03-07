@@ -95,79 +95,7 @@ class PreTrainedModel(nn.Module):
         # Minimal post initialization.
         pass
 
-# ------------------------------------------------------------------
-# Minimal GenerationMixin (for .generate())
-# ------------------------------------------------------------------
 
-# class GenerationMixin:
-#     def generate(self, input_ids, **kwargs):
-#         logger.debug(f"Generating with input_ids: {input_ids}")
-#         # A minimal greedy decoding loop for inference.
-#         self.eval()
-#         with torch.no_grad():
-#             # For simplicity, assume generate returns input_ids (stub).
-#             return input_ids
-        
-
-# class GenerationMixin:
-#     def generate(self, input_ids, max_length=50, **kwargs):
-#         """
-#         Greedy autoregressive decoding with fallback handling for output types.
-        
-#         Args:
-#             input_ids (torch.LongTensor): Initial input token IDs of shape (batch_size, seq_len)
-#             max_length (int): Maximum total length (in tokens) of the generated sequence.
-#             **kwargs: Additional keyword arguments passed to forward().
-        
-#         Returns:
-#             torch.LongTensor: Generated token IDs.
-#         """
-#         self.eval()
-#         generated = input_ids
-#         past_key_values = None
-#         iteration = 0
-#         logger.info(f"Starting generation. Initial sequence length: {generated.shape[1]}")
-
-#         with torch.no_grad():
-#             while generated.shape[1] < max_length:
-#                 iteration += 1
-#                 logger.debug(f"Iteration {iteration}: generated sequence shape: {generated.shape}")
-#                 outputs = self.forward(
-#                     input_ids=generated,
-#                     past_key_values=past_key_values,
-#                     use_cache=True,
-#                     **kwargs
-#                 )
-#                 if hasattr(outputs, "last_hidden_state"):
-#                     last_hidden_state = outputs.last_hidden_state
-#                     past_key_values = outputs.past_key_values
-#                 else:
-#                     last_hidden_state = outputs
-#                     past_key_values = None  # Disable caching if outputs is a plain tensor.
-#                     logger.warning(f"[Generation] Iteration {iteration}: Forward output is a plain tensor; caching is disabled. Tensor shape: {last_hidden_state.shape}")
-                
-#                 logger.debug(f"[Generation] Iteration {iteration}: Shape before lm_head: {last_hidden_state.shape}")
-#                 logits = self.lm_head(last_hidden_state)
-#                 logger.debug(f"[Generation] Iteration {iteration}: Logits shape: {logits.shape}")
-#                 next_token_logits = logits[:, -1, :]
-#                 logger.debug(f"[Generation] Iteration {iteration}: Next token logits shape: {next_token_logits.shape}")
-#                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-
-
-
-
-
-#                 logger.debug(f"Iteration {iteration}: next token shape: {next_token.shape}, value: {next_token.squeeze().tolist()}")
-
-#                 if hasattr(self.config, "eos_token_id") and (next_token == self.config.eos_token_id).all():
-#                     logger.info(f"EOS token encountered at iteration {iteration}. Stopping generation.")
-#                     generated = torch.cat([generated, next_token], dim=1)
-#                     break
-
-#                 generated = torch.cat([generated, next_token], dim=1)
-#                 logger.debug(f"Iteration {iteration}: updated generated shape: {generated.shape}")
-#             logger.info(f"Finished generation. Final sequence length: {generated.shape[1]}")
-#         return generated
 
 
 class GenerationMixin:
@@ -1062,61 +990,6 @@ class Qwen2PreTrainedModel(PreTrainedModel, GenerationMixin):
         if unexpected_keys:
             logger.warning(f"Unexpected keys in state dict: {unexpected_keys}")
         return model
-
-
-# @classmethod
-# def from_pretrained(cls, model_path: str, config: Optional[Qwen2Config] = None, *args, **kwargs):
-#     # Load configuration
-#     if config is None:
-#         config_path = os.path.join(model_path, "config.json")
-#         if os.path.exists(config_path):
-#             config = cls.config_class.from_json_file(config_path)
-#         else:
-#             raise ValueError("No configuration file found in the model path.")
-#     model = cls(config)
-    
-#     from safetensors.torch import load_file
-#     state_dict = {}
-#     total_keys_in_files = 0
-#     # Iterate over all safetensors files in the model path
-#     for filename in os.listdir(model_path):
-#         if filename.endswith(".safetensors"):
-#             file_path = os.path.join(model_path, filename)
-#             file_state_dict = load_file(file_path)
-#             keys_in_file = list(file_state_dict.keys())
-#             num_keys_in_file = len(keys_in_file)
-#             logger.debug(f"Loaded {num_keys_in_file} keys from {filename}: {keys_in_file}")
-#             total_keys_in_files += num_keys_in_file
-#             state_dict.update(file_state_dict)
-#     logger.debug(f"Total keys in safetensors files: {total_keys_in_files}")
-    
-#     # Get model's current state dict keys
-#     model_state = model.state_dict()
-#     total_model_keys = len(model_state.keys())
-#     logger.debug(f"Total keys in model state dict: {total_model_keys}")
-    
-#     # Compute matched, missing, and unexpected keys
-#     pretrained_keys = set(state_dict.keys())
-#     model_keys = set(model_state.keys())
-#     matched_keys = pretrained_keys & model_keys
-#     missing_keys = model_keys - pretrained_keys
-#     unexpected_keys = pretrained_keys - model_keys
-    
-#     logger.debug(f"Total matched keys: {len(matched_keys)}")
-#     logger.debug(f"Matched keys: {matched_keys}")
-#     logger.debug(f"Missing keys (in model but not in pretrained): {missing_keys}")
-#     logger.debug(f"Unexpected keys (in pretrained but not in model): {unexpected_keys}")
-#     if total_model_keys > 0:
-#         logger.debug(f"Percentage of keys matched: {len(matched_keys) / total_model_keys:.2%}")
-    
-#     # Load the state dict (this will also return missing and unexpected keys)
-#     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-#     if missing:
-#         logger.warning(f"Missing keys in state dict after load: {missing}")
-#     if unexpected:
-#         logger.warning(f"Unexpected keys in state dict after load: {unexpected}")
-    
-#     return model
 
 
 
