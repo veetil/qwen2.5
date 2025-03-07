@@ -40,7 +40,7 @@ This minimal implementation consists of the following main files:
   A script to load the pretrained Qwen 2.5 model, tokenize an input prompt, generate text via autoregressive inference, and decode the generated token IDs using the slow tokenizer.
 
 - **`download_model.py`**  
-  A script to download the Qwen 2.5 7B Math Instruct model from Hugging Face into the `models/` directory.
+  A script to download the Qwen 2.5 7B Math Instruct model from Hugging Face into the `model/` directory.
 
 ## Installation
 
