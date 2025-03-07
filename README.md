@@ -50,5 +50,5 @@ Clone the repository and install the required dependencies:
 git clone https://github.com/veetil/qwen2.5.git
 cd qwen2.5
 pip install -r requirements.txt
-python run_inference.py --model_path model --prompt "<|begin▁of▁sentence|>You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|User|>What is the sum of 1 and 2 ?<|Assistant|>" --max_length 250
+python src/run_inference.py --model_path model --prompt "<|begin▁of▁sentence|>You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|User|>What is the sum of 1 and 2 ?<|Assistant|>" --max_length 250
 
